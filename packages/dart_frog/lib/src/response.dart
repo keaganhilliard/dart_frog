@@ -46,9 +46,19 @@ class Response {
           },
         );
 
+  /// Create a [Response] with a json encoded body.
+  Response.file({
+    required File body,
+    Map<String, Object> headers = const <String, Object>{},
+    HttpMethod method = HttpMethod.get,
+    String? rangeHeader,
+  }) {
+    _response = _fileRangeResponse(method, body, rangeHeader, headers);
+  }
+
   Response._(this._response);
 
-  shelf.Response _response;
+  late shelf.Response _response;
 
   /// The HTTP status code of the response.
   int get statusCode => _response.statusCode;
@@ -94,5 +104,63 @@ class Response {
   /// changes.
   Response copyWith({Map<String, Object?>? headers, Object? body}) {
     return Response._(_response.change(headers: headers, body: body));
+  }
+
+  shelf.Response _fileRangeResponse(
+    HttpMethod method,
+    File file,
+    String? range,
+    Map<String, Object> headers,
+  ) {
+    if (range == null || !file.existsSync()) {
+      return shelf.Response(HttpStatus.badRequest);
+    }
+
+    final matches = RegExp(r'^bytes=(\d*)\-(\d*)$').firstMatch(range);
+    // Ignore ranges other than bytes
+    if (matches == null) {
+      return shelf.Response(HttpStatus.badRequest);
+    }
+
+    final actualLength = file.lengthSync();
+    final startMatch = matches[1]!;
+    final endMatch = matches[2]!;
+    if (startMatch.isEmpty && endMatch.isEmpty) {
+      return shelf.Response(HttpStatus.badRequest);
+    }
+
+    int start; // First byte position - inclusive.
+    int end; // Last byte position - inclusive.
+    if (startMatch.isEmpty) {
+      start = actualLength - int.parse(endMatch);
+      if (start < 0) start = 0;
+      end = actualLength - 1;
+    } else {
+      start = int.parse(startMatch);
+      end = endMatch.isEmpty ? actualLength - 1 : int.parse(endMatch);
+    }
+
+    // If the range is syntactically invalid the Range header
+    // MUST be ignored (RFC 2616 section 14.35.1).
+    if (start > end) return shelf.Response(HttpStatus.badRequest);
+
+    if (end >= actualLength) {
+      end = actualLength - 1;
+    }
+    if (start >= actualLength) {
+      return shelf.Response(
+        HttpStatus.requestedRangeNotSatisfiable,
+        headers: headers,
+      );
+    }
+    return shelf.Response(
+      HttpStatus.partialContent,
+      body: method == HttpMethod.head ? null : file.openRead(start, end + 1),
+      headers: {
+        ...headers,
+        HttpHeaders.contentLengthHeader: (end - start + 1).toString(),
+        HttpHeaders.contentRangeHeader: 'bytes $start-$end/$actualLength',
+      },
+    );
   }
 }
